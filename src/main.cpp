@@ -251,6 +251,7 @@ struct State {
     float dtAccum = 0.f;          // sums CBF's sub-steps into a full step
 
     bool realHeld = false;        // jump currently held in the real game
+    bool suppressTrail = false;   // don't add wave-trail points (rewinds)
 
     std::deque<HistEntry> history;
     std::deque<ActivationLog> activations;
@@ -280,7 +281,11 @@ struct State {
 
     std::string lastLabel;
 
+    // per-attempt stats for the debug log
+    int nInputs = 0, nAsIs = 0, nDelayed = 0, nRewound = 0, nNoFix = 0, nHits = 0, nSaved = 0;
+
     void resetRun() {
+        nInputs = nAsIs = nDelayed = nRewound = nNoFix = nHits = nSaved = 0;
         step = 0;
         history.clear();
         activations.clear();
@@ -335,6 +340,18 @@ static void dbg(fmt::format_string<Args...> f, Args&&... args) {
 // ---------------------------------------------------------------------------
 // Ghost simulation
 // ---------------------------------------------------------------------------
+
+// Ghosts have their own trails, which GD would keep drawing on screen.
+static void hideGhostTrails(PlayerObject* ghost) {
+    if (!ghost) return;
+    ghost->setVisible(false);
+    if (ghost->m_waveTrail) {
+        ghost->m_waveTrail->setVisible(false);
+        ghost->m_waveTrail->m_drawStreak = false;
+    }
+    if (ghost->m_regularTrail) ghost->m_regularTrail->setVisible(false);
+    if (ghost->m_shipStreak) ghost->m_shipStreak->setVisible(false);
+}
 
 static void stepPlayer(PlayLayer* pl, PlayerObject* p, float dt) {
     if (p->m_collisionLogTop) p->m_collisionLogTop->removeAllObjects();
@@ -415,8 +432,8 @@ static bool simulate(PlayLayer* pl, SimOptions const& o) {
     }
 
     g.simActive = false;
-    g.ghost1->setVisible(false);
-    g.ghost2->setVisible(false);
+    hideGhostTrails(g.ghost1);
+    hideGhostTrails(g.ghost2);
 
     apply(pl->m_player1, real1);
     if (pl->m_player2) apply(pl->m_player2, real2);
@@ -513,14 +530,25 @@ static bool rewindAndApply(PlayLayer* pl, int k, PendingInput const& ev) {
     auto ghostTouched = g.simActivated;
 
     // Let GD register the click (counters, held state), then overwrite the
-    // player with the corrected state.
+    // player with the corrected state. The wave trail must turn where the
+    // on-time click happened, not where the late one did.
+    g.suppressTrail = true;
     inject(pl, ev.down, ev.isPlayer1);
+    g.suppressTrail = false;
     final1.m_isSecondPlayer = pl->m_player1->m_isSecondPlayer;
     apply(pl->m_player1, final1);
     if (dual) {
         final2.m_isSecondPlayer = pl->m_player2->m_isSecondPlayer;
         apply(pl->m_player2, final2);
     }
+    auto fixTrail = [](PlayerObject* p, PlayerSnap const& atClick) {
+        if (p && p->m_isDart && p->m_waveTrail && atClick.valid) {
+            p->m_waveTrail->addPoint(atClick.nodePos);
+            p->m_waveTrail->m_currentPoint = p->getPosition();
+        }
+    };
+    fixTrail(pl->m_player1, baseCopy.p1);
+    if (dual) fixTrail(pl->m_player2, baseCopy.p2);
 
     // Objects: undo what the late timeline used, mark what the corrected one used.
     for (auto const& a : g.activations) {
@@ -549,9 +577,14 @@ static bool rewindAndApply(PlayLayer* pl, int k, PendingInput const& ev) {
     return true;
 }
 
+// How far ahead an input is judged.
+// Tap modes: until the jump it starts has landed (or `lookahead`).
+// Hold modes (ship / wave / robot): only the few steps right after the input.
+// Nobody holds a wave input for long, so judging further ahead would assume
+// a hold the player never makes and flag good inputs as fatal.
 static int horizonFor(PlayLayer* pl) {
     int n = cfg.steps;
-    return isHoldMode(pl->m_player1) ? (2 * n + 8) : std::max(cfg.lookahead, 2 * n + 8);
+    return isHoldMode(pl->m_player1) ? std::max(n + 3, 5) : std::max(cfg.lookahead, 2 * n + 8);
 }
 
 static std::vector<SimInput> inputsFor(PlayLayer* pl, bool down, int at) {
@@ -580,6 +613,7 @@ static bool passesAsIs(PlayLayer* pl, PendingInput const& ev) {
 
 // Decide what to do with an input at the current step boundary.
 static void decide(PlayLayer* pl, PendingInput ev) {
+    g.nInputs++;
     int now = g.step;
     int n = cfg.steps;
     const char* what = ev.down ? "press" : "release";
@@ -602,10 +636,13 @@ static void decide(PlayLayer* pl, PendingInput ev) {
     if (!g.grace) {
         // 1. Does the input work as-is?
         if (passesAsIs(pl, ev)) {
+            g.nAsIs++;
             inject(pl, ev.down, ev.isPlayer1);
             return;
         }
     }
+
+    bool wasGrace = g.grace;
 
     // 2. Nearest shift first: +1 (later), -1 (earlier), +2, -2, ...
     for (int d = 1; d <= n; ++d) {
@@ -618,6 +655,7 @@ static void decide(PlayLayer* pl, PendingInput ev) {
             if (simulate(pl, later)) {
                 g.scheduled.push_back({ now + d, ev.down, ev.isPlayer1 });
                 g.delayOffset = d;
+                g.nDelayed++;
                 dbg("[IB] step {}: {} early -> delayed {} step(s)", now, what, d);
                 return;
             }
@@ -635,12 +673,15 @@ static void decide(PlayLayer* pl, PendingInput ev) {
         earlier.excludeFrom = target;
         earlier.landFrom = landFor(pl, 0);
         if (simulate(pl, earlier) && rewindAndApply(pl, d, ev)) {
+            g.nRewound++;
+            if (wasGrace) g.nSaved++;
             dbg("[IB] step {}: {} late -> moved back {} step(s)", now, what, d);
             return;
         }
     }
 
     // 3. Nothing in range helps: play it as it was.
+    g.nNoFix++;
     dbg("[IB] step {}: {} left as-is (no timing within {} steps passes)", now, what, n);
     inject(pl, ev.down, ev.isPlayer1);
 }
@@ -873,6 +914,7 @@ class $modify(IBPlayLayer, PlayLayer) {
             ghost->m_hasShipParticles = false;
             ghost->setPosition({ 0, 105 });
             m_objectLayer->addChild(ghost);
+            hideGhostTrails(ghost);
             if (i == 0) g.ghost1 = ghost; else g.ghost2 = ghost;
         }
 
@@ -891,8 +933,16 @@ class $modify(IBPlayLayer, PlayLayer) {
     }
 
     void resetLevel() {
+        if (g.layer == this && g.nInputs + g.nHits > 0) {
+            dbg("[IB] attempt summary: {} inputs | {} fine as-is | {} delayed (early) | {} moved back (late) | {} no fix possible | {} hits, {} saved by a late click",
+                g.nInputs, g.nAsIs, g.nDelayed, g.nRewound, g.nNoFix, g.nHits, g.nSaved);
+        }
         PlayLayer::resetLevel();
-        if (g.layer == this) g.resetRun();
+        if (g.layer == this) {
+            g.resetRun();
+            dbg("[IB] attempt start: buffer {} | {}{}", cfg.enabled && cfg.steps > 0 ? fmt::format("{} steps", cfg.steps) : std::string("off"),
+                m_isTestMode ? "start pos" : "from start", m_isPracticeMode ? ", practice" : "");
+        }
     }
 
     void onQuit() {
@@ -930,6 +980,7 @@ class $modify(IBPlayLayer, PlayLayer) {
         // Hit something. Remember the pose at contact; whether a late click
         // could still save this is checked right after the current step.
         if (!g.grace) {
+            g.nHits++;
             g.grace = true;
             g.graceEvaluated = false;
             g.graceStart = g.step;
@@ -974,6 +1025,8 @@ class $modify(IBBaseLayer, GJBaseGameLayer) {
             // exact timing is kept. Otherwise correct it at the next step.
             bool clear = g.incoming.empty() && g.scheduled.empty() && !g.grace;
             if (clear && passesAsIs(pl, ev)) {
+                g.nInputs++;
+                g.nAsIs++;
                 GJBaseGameLayer::handleButton(down, button, isPlayer1);
                 g.lastEventStep = g.step;
                 g.realHeld = down;
@@ -1223,7 +1276,8 @@ class $modify(IBGameObject, GameObject) {
 
 class $modify(IBHardStreak, HardStreak) {
     void addPoint(CCPoint point) {
-        if (g.simActive) return;
+        if (g.simActive || g.suppressTrail) return;
+        if ((g.ghost1 && this == g.ghost1->m_waveTrail) || (g.ghost2 && this == g.ghost2->m_waveTrail)) return;
         HardStreak::addPoint(point);
     }
 };
