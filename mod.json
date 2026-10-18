@@ -1,0 +1,70 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081"
+	},
+	"id": "local.input-buffer",
+	"name": "Input Buffer",
+	"version": "v0.1.0",
+	"developer": "you",
+	"description": "Snaps early or late clicks to the nearest timing that survives, within a set number of physics steps. Safe mode is built in.",
+	"settings": {
+		"enabled": {
+			"type": "bool",
+			"name": "Enabled",
+			"description": "Turns the input buffer on or off. While it's on in a level, nothing from that level session is saved (built-in safe mode).",
+			"default": true
+		},
+		"steps": {
+			"type": "int",
+			"name": "Buffer steps",
+			"description": "How far an input may be moved, earlier or later, in physics steps. 1 step = 1/240 s (about 4.2 ms). 0 turns the buffer off.",
+			"default": 4,
+			"min": 0,
+			"max": 16,
+			"control": {
+				"slider": true,
+				"slider-step": 1,
+				"arrows": true,
+				"input": true
+			}
+		},
+		"lookahead": {
+			"type": "int",
+			"name": "Lookahead (steps)",
+			"description": "How far ahead each prediction runs for tap gamemodes (cube, ball, UFO, spider, swing). Higher catches deaths further after the click, but is slower. Hold gamemodes (ship, wave, robot) use a short fixed window.",
+			"default": 90,
+			"min": 20,
+			"max": 240,
+			"control": {
+				"slider": true,
+				"arrows": true,
+				"input": true
+			}
+		},
+		"key-toggle": {
+			"type": "keybind",
+			"name": "Toggle buffer",
+			"default": "F8",
+			"category": "gameplay"
+		},
+		"key-steps-up": {
+			"type": "keybind",
+			"name": "More buffer steps",
+			"default": "]",
+			"category": "gameplay"
+		},
+		"key-steps-down": {
+			"type": "keybind",
+			"name": "Fewer buffer steps",
+			"default": "[",
+			"category": "gameplay"
+		},
+		"debug-log": {
+			"type": "bool",
+			"name": "Debug log",
+			"description": "Writes every decision (delayed / moved back / left as-is) to the Geode console. Turn this on when testing and send me the log if something feels off.",
+			"default": false
+		}
+	}
+}
