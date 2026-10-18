@@ -1,0 +1,29 @@
+name: Build Input Buffer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  build:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the mod
+        id: build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          # uses the Geode version from mod.json (5.11.2 = GD 2.2081)
+          sdk: given
+          target: Win64
+
+      - name: Upload the .geode file
+        uses: actions/upload-artifact@v4
+        with:
+          name: input-buffer
+          path: ${{ steps.build.outputs.build-output }}
